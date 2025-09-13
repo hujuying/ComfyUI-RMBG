@@ -1,4 +1,4 @@
-#自用修复版
+# 自用修复版
 
 通过延迟导入：所有依赖项（SAM2、GroundingDINO、Hydra）都在实际需要时才加载，而不是在文件导入时就加载
 
@@ -420,6 +420,7 @@ If this custom node helps you or you like my work, please give me ⭐ on this re
 
 ## License
 GPL-3.0 License
+
 
 
 
