@@ -1,3 +1,18 @@
+#自用修复版
+
+通过延迟导入：所有依赖项（SAM2、GroundingDINO、Hydra）都在实际需要时才加载，而不是在文件导入时就加载
+
+错误隔离：每个导入操作都有独立的try-except块，即使某个依赖失败也不会影响整个ComfyUI启动
+
+安全的PyTorch补丁：PyTorch的全局修改被包装在安全函数中，并且只应用一次
+
+优雅降级：如果依赖缺失，节点仍然会出现在ComfyUI中，但会显示错误信息而不是崩溃
+
+基础功能保障：即使AILab_ImageMaskTools不可用，也提供了基础的图像转换函数
+
+如果SAM2相关依赖缺失，节点会显示不可用但不会影响整个系统的稳定性。
+
+
 # ComfyUI-RMBG
 
 A sophisticated ComfyUI custom node engineered for advanced image background removal and precise segmentation of objects, faces, clothing, and fashion elements. This tool leverages a diverse array of models, including RMBG-2.0, INSPYRENET, BEN, BEN2, BiRefNet, SDMatte models, SAM, SAM2 and GroundingDINO, while also incorporating a new feature for real-time background replacement and enhanced edge detection for improved accuracy.
@@ -405,6 +420,7 @@ If this custom node helps you or you like my work, please give me ⭐ on this re
 
 ## License
 GPL-3.0 License
+
 
 
 
