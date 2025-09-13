@@ -6,51 +6,120 @@ import numpy as np
 from PIL import Image, ImageFilter
 from torch.hub import download_url_to_file
 from safetensors.torch import load_file
-
+ 
 import folder_paths
 import comfy.model_management
-
-from hydra import initialize
-from hydra.core.global_hydra import GlobalHydra
-
+ 
+# 延迟导入和错误处理
+SAM2_AVAILABLE = False
+GROUNDINGDINO_AVAILABLE = False
+HYDRA_AVAILABLE = False
+SAM2_PREDICTOR_AVAILABLE = False
+ 
+# 安全的导入函数
+def safe_import_sam2():
+    global SAM2_AVAILABLE, SAM2_PREDICTOR_AVAILABLE
+    if not SAM2_AVAILABLE:
+        try:
+            current_dir = os.path.dirname(__file__)
+            sam2_path = os.path.join(current_dir, "sam2")
+            if sam2_path not in sys.path:
+                sys.path.insert(0, sam2_path)
+            
+            from sam2_image_predictor import SAM2ImagePredictor
+            global SAM2ImagePredictor
+            SAM2_AVAILABLE = True
+            SAM2_PREDICTOR_AVAILABLE = True
+            print("SAM2 modules loaded successfully")
+        except Exception as e:
+            print(f"Warning: SAM2 not available: {e}")
+            SAM2_AVAILABLE = False
+            SAM2_PREDICTOR_AVAILABLE = False
+ 
+def safe_import_groundingdino():
+    global GROUNDINGDINO_AVAILABLE
+    if not GROUNDINGDINO_AVAILABLE:
+        try:
+            from groundingdino.util.slconfig import SLConfig
+            from groundingdino.models import build_model
+            from groundingdino.util.utils import clean_state_dict
+            from groundingdino.util import box_ops
+            from groundingdino.datasets.transforms import Compose, RandomResize, ToTensor, Normalize
+            global SLConfig, build_model, clean_state_dict, box_ops, Compose, RandomResize, ToTensor, Normalize
+            GROUNDINGDINO_AVAILABLE = True
+            print("GroundingDINO modules loaded successfully")
+        except Exception as e:
+            print(f"Warning: GroundingDINO not available: {e}")
+            GROUNDINGDINO_AVAILABLE = False
+ 
+def safe_import_hydra():
+    global HYDRA_AVAILABLE
+    if not HYDRA_AVAILABLE:
+        try:
+            from hydra import initialize
+            from hydra.core.global_hydra import GlobalHydra
+            from hydra import compose
+            from omegaconf import OmegaConf
+            from hydra.utils import instantiate
+            global initialize, GlobalHydra, compose, OmegaConf, instantiate
+            HYDRA_AVAILABLE = True
+            print("Hydra modules loaded successfully")
+        except Exception as e:
+            print(f"Warning: Hydra not available: {e}")
+            HYDRA_AVAILABLE = False
+ 
+# 安全的PyTorch补丁应用
+def apply_safe_torch_patches():
+    try:
+        # 只在需要时应用补丁，避免全局影响
+        if not hasattr(torch, '_sam2_patches_applied'):
+            # 保存原始函数
+            original_torch_load = torch.load
+            original_jit_script = torch.jit.script
+            
+            # 应用补丁
+            def patched_torch_load(*args, **kwargs):
+                if 'weights_only' not in kwargs:
+                    kwargs['weights_only'] = False
+                return original_torch_load(*args, **kwargs)
+            
+            def patched_jit_script(obj):
+                return obj
+            
+            torch.load = patched_torch_load
+            torch.jit.script = patched_jit_script
+            
+            # 标记补丁已应用
+            torch._sam2_patches_applied = True
+            print("PyTorch patches applied successfully")
+    except Exception as e:
+        print(f"Warning: Failed to apply PyTorch patches: {e}")
+ 
+# 从其他模块安全导入
 try:
-    from groundingdino.util.slconfig import SLConfig
-    from groundingdino.models import build_model
-    from groundingdino.util.utils import clean_state_dict
-    from groundingdino.util import box_ops
-    from groundingdino.datasets.transforms import Compose, RandomResize, ToTensor, Normalize
-    GROUNDINGDINO_AVAILABLE = True
+    from AILab_ImageMaskTools import pil2tensor, tensor2pil
+    IMAGE_MASK_TOOLS_AVAILABLE = True
 except ImportError:
-    GROUNDINGDINO_AVAILABLE = False
-    print("Warning: GroundingDINO not available. Text prompts will use fallback method.")
-
-# Disable PyTorch JIT compilation
-torch.jit._state._python_cu = None
-torch._C._jit_set_profiling_mode(False)
-torch._C._jit_set_profiling_executor(False)
-
-original_jit_script = torch.jit.script
-def patched_jit_script(obj):
-    return obj
-torch.jit.script = patched_jit_script
-
-current_dir = os.path.dirname(__file__)
-sam2_path = os.path.join(current_dir, "sam2")
-sys.path.insert(0, sam2_path)
-
-import torch.serialization
-original_torch_load = torch.load
-
-def patched_torch_load(*args, **kwargs):
-    if 'weights_only' not in kwargs:
-        kwargs['weights_only'] = False
-    return original_torch_load(*args, **kwargs)
-
-torch.load = patched_torch_load
-
-from sam2_image_predictor import SAM2ImagePredictor
-from AILab_ImageMaskTools import pil2tensor, tensor2pil
-
+    print("Warning: AILab_ImageMaskTools not available")
+    IMAGE_MASK_TOOLS_AVAILABLE = False
+    # 提供基础实现
+    def pil2tensor(image):
+        import torch
+        import numpy as np
+        if image.mode == 'RGBA':
+            image = image.convert('RGB')
+        np_image = np.array(image).astype(np.float32) / 255.0
+        tensor = torch.from_numpy(np_image).unsqueeze(0)
+        return tensor
+    
+    def tensor2pil(tensor):
+        import torch
+        import numpy as np
+        if len(tensor.shape) == 4:
+            tensor = tensor.squeeze(0)
+        np_image = (tensor.cpu().numpy() * 255).astype(np.uint8)
+        return Image.fromarray(np_image)
+ 
 # SAM2 model definitions with FP32 and FP16 versions
 SAM2_MODELS = {
     "sam2.1_hiera_tiny": {
@@ -94,7 +163,7 @@ SAM2_MODELS = {
         }
     }
 }
-
+ 
 # GroundingDINO model definitions
 DINO_MODELS = {
     "GroundingDINO_SwinT_OGC (694MB)": {
@@ -110,7 +179,7 @@ DINO_MODELS = {
         "model_filename": "groundingdino_swinb_cogcoor.safetensors"
     }
 }
-
+ 
 def get_or_download_model_file(filename, url, dirname):
     local_path = folder_paths.get_full_path(dirname, filename)
     if local_path:
@@ -122,7 +191,7 @@ def get_or_download_model_file(filename, url, dirname):
         print(f"Downloading {filename} from {url} ...")
         download_url_to_file(url, local_path)
     return local_path
-
+ 
 def process_mask(mask_image: Image.Image, invert_output: bool = False, 
                 mask_blur: int = 0, mask_offset: int = 0) -> Image.Image:
     if invert_output:
@@ -136,7 +205,7 @@ def process_mask(mask_image: Image.Image, invert_output: bool = False,
         for _ in range(abs(mask_offset)):
             mask_image = mask_image.filter(filter_type(size))
     return mask_image
-
+ 
 def apply_background_color(image: Image.Image, mask_image: Image.Image, 
                          background: str = "Alpha",
                          background_color: str = "#222222") -> Image.Image:
@@ -153,11 +222,22 @@ def apply_background_color(image: Image.Image, mask_image: Image.Image,
         composite_image = Image.alpha_composite(bg_image, rgba_image)
         return composite_image.convert('RGB')
     return rgba_image
-
-
+ 
+ 
 class SAM2Segment:
     @classmethod
     def INPUT_TYPES(cls):
+        # 检查依赖是否可用
+        if not (SAM2_AVAILABLE and GROUNDINGDINO_AVAILABLE and HYDRA_AVAILABLE):
+            return {
+                "required": {
+                    "image": ("IMAGE",),
+                },
+                "optional": {
+                    "error_message": ("STRING", {"default": "SAM2 node unavailable: Missing dependencies. Please install required packages."}),
+                }
+            }
+        
         tooltips = {
             "prompt": "Enter text description of object to segment",
             "sam2_model": "SAM2 model size: Tiny (fastest) to Large (best quality)",
@@ -187,17 +267,35 @@ class SAM2Segment:
                 "background_color": ("COLOR", {"default": "#222222", "tooltip": tooltips["background_color"]}),
             }
         }
-
+ 
     RETURN_TYPES = ("IMAGE", "MASK", "IMAGE")
     RETURN_NAMES = ("IMAGE", "MASK", "MASK_IMAGE")
     FUNCTION = "segment_v2"
     CATEGORY = "🧪AILab/🧽RMBG"
-
+ 
     def __init__(self):
         self.dino_model_cache = {}
         self.sam2_model_cache = {}
-
+        # 延迟加载依赖
+        self._dependencies_loaded = False
+ 
+    def _load_dependencies(self):
+        if not self._dependencies_loaded:
+            try:
+                apply_safe_torch_patches()
+                safe_import_sam2()
+                safe_import_groundingdino()
+                safe_import_hydra()
+                self._dependencies_loaded = True
+            except Exception as e:
+                print(f"Failed to load dependencies: {e}")
+ 
     def load_sam2(self, model_name, device="Auto"):
+        self._load_dependencies()
+        
+        if not SAM2_AVAILABLE or not SAM2_PREDICTOR_AVAILABLE:
+            raise RuntimeError("SAM2 is not available")
+            
         cache_key = f"{model_name}_{device}"
         if cache_key not in self.sam2_model_cache:
             model_info = SAM2_MODELS[model_name]
@@ -232,9 +330,6 @@ class SAM2Segment:
             sam_device = comfy.model_management.get_torch_device()
             
             from sam2.build_sam import build_sam2
-            from hydra import compose
-            from omegaconf import OmegaConf
-            from hydra.utils import instantiate
             
             cfg = compose(config_name=config_file)
             OmegaConf.resolve(cfg)
@@ -250,12 +345,28 @@ class SAM2Segment:
             predictor = SAM2ImagePredictor(sam_model)
             self.sam2_model_cache[cache_key] = predictor
         return self.sam2_model_cache[cache_key]
-
-    def segment_v2(self, image, prompt, sam2_model, dino_model, device, threshold=0.35,
+ 
+    def segment_v2(self, image, prompt="", sam2_model="sam2.1_hiera_tiny", dino_model="GroundingDINO_SwinT_OGC (694MB)", device="Auto", threshold=0.35,
                    mask_blur=0, mask_offset=0, background="Alpha", 
-                   background_color="#222222", invert_output=False):
+                   background_color="#222222", invert_output=False, error_message=""):
+        
+        # 检查依赖是否可用
+        if not (SAM2_AVAILABLE and GROUNDINGDINO_AVAILABLE and HYDRA_AVAILABLE):
+            print(f"SAM2 Segment Error: {error_message}")
+            # 返回原始图像和空mask
+            batch_size = image.shape[0] if len(image.shape) == 4 else 1
+            if len(image.shape) == 3:
+                image = image.unsqueeze(0)
+            
+            height, width = image.shape[1:3] if len(image.shape) == 4 else image.shape[:2]
+            empty_mask = torch.zeros((batch_size, 1, height, width), dtype=torch.float32, device="cpu")
+            empty_mask_rgb = empty_mask.reshape((-1, 1, height, width)).movedim(1, -1).expand(-1, -1, -1, 3)
+            
+            return (image, empty_mask, empty_mask_rgb)
+ 
+        self._load_dependencies()
         device_obj = comfy.model_management.get_torch_device()
-
+ 
         # Process batch images
         batch_size = image.shape[0] if len(image.shape) == 4 else 1
         if len(image.shape) == 3:
@@ -268,12 +379,12 @@ class SAM2Segment:
         for b in range(batch_size):
             img_pil = tensor2pil(image[b])
             img_np = np.array(img_pil.convert("RGB"))
-
+ 
             # Load GroundingDINO config and weights
             dino_info = DINO_MODELS[dino_model]
             config_path = get_or_download_model_file(dino_info["config_filename"], dino_info["config_url"], "grounding-dino")
             weights_path = get_or_download_model_file(dino_info["model_filename"], dino_info["model_url"], "grounding-dino")
-
+ 
             # Load and cache GroundingDINO model
             dino_key = (config_path, weights_path, device_obj)
             if dino_key not in self.dino_model_cache:
@@ -287,10 +398,10 @@ class SAM2Segment:
                 model.to(device_obj)
                 self.dino_model_cache[dino_key] = model
             dino = self.dino_model_cache[dino_key]
-
+ 
             # Load SAM2 model
             predictor = self.load_sam2(sam2_model, device)
-
+ 
             # Preprocess image for DINO
             transform = Compose([
                 RandomResize([800], max_size=1333),
@@ -299,16 +410,16 @@ class SAM2Segment:
             ])
             image_tensor, _ = transform(img_pil.convert("RGB"), None)
             image_tensor = image_tensor.unsqueeze(0).to(device_obj)
-
+ 
             # Prepare text prompt
             text_prompt = prompt if prompt.endswith(".") else prompt + "."
-
+ 
             # Forward pass
             with torch.no_grad():
                 outputs = dino(image_tensor, captions=[text_prompt])
             logits = outputs["pred_logits"].sigmoid()[0]
             boxes = outputs["pred_boxes"][0]
-
+ 
             # Filter boxes by threshold
             filt_mask = logits.max(dim=1)[0] > threshold
             boxes_filt = boxes[filt_mask]
@@ -323,13 +434,13 @@ class SAM2Segment:
                 result_masks.append(empty_mask)
                 result_mask_images.append(empty_mask_rgb)
                 continue
-
+ 
             # Convert boxes to xyxy
             H, W = img_pil.size[1], img_pil.size[0]
             boxes_xyxy = box_ops.box_cxcywh_to_xyxy(boxes_filt)
             boxes_xyxy = boxes_xyxy * torch.tensor([W, H, W, H], dtype=torch.float32, device=boxes_xyxy.device)
             boxes_xyxy = boxes_xyxy.cpu().numpy()
-
+ 
             # Set image and predict with autocast for precision handling
             from contextlib import nullcontext
             # Determine precision based on device preference
@@ -371,7 +482,7 @@ class SAM2Segment:
             
             mask = (mask * 255).astype(np.uint8)
             mask_pil = Image.fromarray(mask, mode="L")
-
+ 
             # Process mask and apply background
             mask_image = process_mask(mask_pil, invert_output, mask_blur, mask_offset)
             result_image = apply_background_color(img_pil, mask_image, background, background_color)
@@ -387,7 +498,7 @@ class SAM2Segment:
             result_images.append(pil2tensor(result_image))
             result_masks.append(mask_tensor)
             result_mask_images.append(mask_image_vis)
-
+ 
         # If no images were successfully processed, return empty results
         if len(result_images) == 0:
             width, height = tensor2pil(image[0]).size
@@ -399,11 +510,11 @@ class SAM2Segment:
         return (torch.cat(result_images, dim=0), 
                 torch.cat(result_masks, dim=0), 
                 torch.cat(result_mask_images, dim=0))
-
+ 
 NODE_CLASS_MAPPINGS = {
     "SAM2Segment": SAM2Segment,
 }
-
+ 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "SAM2Segment": "SAM2 Segmentation (RMBG)",
 }
